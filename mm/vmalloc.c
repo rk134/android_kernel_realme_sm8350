@@ -3720,7 +3720,8 @@ static int s_show(struct seq_file *m, void *p)
 	}
 
 	v = va->vm;
-
+	if (v->flags & VM_LOWMEM)
+		return 0;
 	seq_printf(m, "0x%pK-0x%pK %7ld",
 		v->addr, v->addr + v->size, v->size);
 
@@ -3750,9 +3751,6 @@ static int s_show(struct seq_file *m, void *p)
 
 	if (is_vmalloc_addr(v->pages))
 		seq_puts(m, " vpages");
-
-	if (v->flags & VM_LOWMEM)
-		seq_puts(m, " lowmem");
 
 	show_numa_info(m, v);
 	seq_putc(m, '\n');
