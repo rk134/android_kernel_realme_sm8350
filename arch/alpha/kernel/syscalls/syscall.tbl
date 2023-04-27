@@ -479,4 +479,3 @@
 # 547 reserved for openat2
 # 548 reserved for pidfd_getfd
 # 549 reserved for faccessat2
-550	common	process_madvise			sys_process_madvise
