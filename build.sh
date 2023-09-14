@@ -124,6 +124,7 @@ compiler_setup()
 
 	MAKE_ARGS+=("O=work" "ARCH=arm64" "BRAND_SHOW_FLAG=realme"
 		"CROSS_COMPILE=$CROSS_COMPILE"
+		"LOCALVERSION=—CosmicFresh-$LAST_HASH"
 		"DTC_FLAGS+=-q" "DTC_EXT=$(which dtc)"
 		"LLVM_IAS=1" "LLVM=1" "CC=$CC"
 		"HOSTLD=ld.lld"	"PATH=$C_PATH/bin:$PATH"
