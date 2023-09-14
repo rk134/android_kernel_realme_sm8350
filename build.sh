@@ -292,50 +292,18 @@ zipper()
 		mkdir "$KERNEL_DIR"/out
 	fi
 
-	# Making sure everything is ok before making zip
-	cd "$AK3_DIR" || exit
-	make clean
-	cd "$KERNEL_DIR" || exit
-
+    cd $AK3_DIR
+	rm -rf {Image.gz,dtb,dtbo.img,CosmicFresh*}
+	cd $KERNEL_DIR
+	rm -rf "$KERNEL_DIR"/out/CosmicFresh*
 	mv -f "$KERNEL_DIR"/work/"$TARGET" "$DTBO_PATH"/*.img "$AK3_DIR"
-        find "$DTB_PATH"/vendor/*/* -name '*.dtb' -exec cat {} + > "$AK3_DIR"/dtb
-	if [[ $CONFIG_MODULES == "y" ]]; then
-		MOD_PATH="work/modules/lib/modules/$MOD_NAME"
-		sed -i 's/\(kernel\/[^: ]*\/\)\([^: ]*\.ko\)/\/vendor\/lib\/modules\/\2/g' "$MOD_PATH"/modules.dep
-		sed -i 's/.*\///g' "$MOD_PATH"/modules.order
-		if [[ $DRM_VENDOR_MODULE == "1" ]]; then
-			DRM_AS_MODULE=1
-			if [ ! -d "$AK3_DIR"/vendor_ramdisk/lib/modules/ ]; then
-				VENDOR_RAMDISK_CREATE=1
-				mkdir -p "$AK3_DIR"/vendor_ramdisk/lib/modules/
-			fi
-			mv "$(find "$MOD_PATH" -name 'msm_drm.ko')" "$AKVRD"
-			grep drm "$MOD_PATH/modules.alias" >"$AKVRD"/modules.alias
-			grep drm "$MOD_PATH/modules.dep" | sed 's/^........//' >"$AKVRD"/modules.dep
-			grep drm "$MOD_PATH/modules.softdep" >"$AKVRD"/modules.softdep
-			grep drm "$MOD_PATH/modules.order" >"$AKVRD"/modules.load
-			sed -i s/split_boot/dump_boot/g "$AK3_DIR"/anykernel.sh
-		fi
-		# shellcheck disable=SC2046
-		# cp breaks with advised follow up
-		cp $(find "$MOD_PATH" -name '*.ko') "$AKVDR"/
-		cp "$MOD_PATH"/modules.{alias,dep,softdep} "$AKVDR"/
-		cp "$MOD_PATH"/modules.order "$AKVDR"/modules.load
-	fi
 
 	LAST_COMMIT=$(git show -s --format=%s)
 	LAST_HASH=$(git rev-parse --short HEAD)
 
 	cd "$AK3_DIR" || exit
 
-	make zip VERSION="$(echo "$CONFIG_LOCALVERSION" | cut -c 8-)" CUSTOM="$LAST_HASH"
-	if [ "$DRM_AS_MODULE" = "1" ]; then
-		if [ "$VENDOR_RAMDISK_CREATE" = "1" ]; then
-			rm -rf "$AK3_DIR"/vendor_ramdisk/
-		fi
-		sed -i s/'dump_boot; # skip unpack'/'split_boot; # skip unpack'/g "$AK3_DIR"/anykernel.sh
-	fi
-
+	zip -r9 "CosmicFresh-$LAST_HASH.zip" *
 	inform --force "
 	***************AtomX-Kernel**************
 
@@ -357,9 +325,7 @@ zipper()
 	*****************************************
 	"
 
-	cp ./*-signed.zip "$KERNEL_DIR"/out
-
-	make clean
+	cp ./*.zip "$KERNEL_DIR"/out
 
 	cd "$KERNEL_DIR" || exit
 
