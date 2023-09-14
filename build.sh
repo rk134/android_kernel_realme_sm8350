@@ -294,10 +294,11 @@ zipper()
 	fi
 
     cd $AK3_DIR
-	rm -rf {Image.gz,dtb,dtbo.img,CosmicFresh*}
+	rm -rf {Image.gz,dtb,dtb.img,dtbo.img,CosmicFresh*}
 	cd $KERNEL_DIR
 	rm -rf "$KERNEL_DIR"/out/CosmicFresh*
-	mv -f "$KERNEL_DIR"/work/"$TARGET" "$DTBO_PATH"/*.img "$AK3_DIR"
+	mv -f "$KERNEL_DIR"/work/"$TARGET" "$DTBO_PATH"/dtbo.img "$AK3_DIR"
+	find "$DTB_PATH"/vendor/*/* -name '*.dtb' -exec cat {} + > "$AK3_DIR"/dtb
 
 	LAST_COMMIT=$(git show -s --format=%s)
 	LAST_HASH=$(git rev-parse --short HEAD)
