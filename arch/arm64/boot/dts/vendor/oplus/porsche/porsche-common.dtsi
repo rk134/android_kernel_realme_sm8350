@@ -1838,6 +1838,7 @@
 		fingerprint_underscreen_support;
                 health_monitor_support;
 		//esd_handle_support;
+		leave_gesture_buffer;
 		new_set_irq_wake_support;
 		// focalt x8 resolution config
 		high_resolution_support;
