@@ -23,20 +23,28 @@
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_gpio.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
-#include <linux/pm_wakeup.h>
+//#include <linux/wakelock.h>
+#include "../include/wakelock.h"
 #include <linux/cdev.h>
 #include <net/sock.h>
 #include "jiiov_platform.h"
 
-#ifdef ANC_USE_SPI
-#include <linux/spi/spi.h>
-#include <linux/spi/spidev.h>
+//#define ANC_CONFIG_PM_WAKELOCKS 0
+
+
+#ifdef ANC_CONFIG_PM_WAKELOCKS
+#include <linux/pm_wakeup.h>
+#else
+#include "../include/wakelock.h"
 #endif
 
+#include <linux/spi/spi.h>
+#include <linux/spi/spidev.h>
+
 #include "../include/oplus_fp_common.h"
-#include <linux/msm_drm_notify.h>
 #include <linux/notifier.h>
 #include <linux/fb.h>
 
@@ -55,6 +63,7 @@ static int anc_major_num = ANC_DEVICE_MAJOR;
 static uint8_t *spi_buffer = NULL;
 #endif
 
+static uint8_t is_spi_clk_open = 0;
 #ifdef ANC_USE_SPI
 typedef struct spi_device anc_device_t;
 typedef struct spi_driver anc_driver_t;
@@ -85,7 +94,7 @@ struct vreg_config {
 };
 
 #define ANC_VREG_LDO_NAME    "ldo"
-static struct vreg_config const vreg_conf[] = {
+static const struct vreg_config const vreg_conf[] = {
     { ANC_VREG_LDO_NAME, 3300000UL, 3300000UL, 150000, },
 };
 #endif
@@ -101,7 +110,11 @@ struct anc_data {
 #ifndef ANC_USE_POWER_GPIO
     struct regulator *vreg[ARRAY_SIZE(vreg_conf)];
 #endif
-    struct wakeup_source *fp_wakelock;
+#ifdef ANC_CONFIG_PM_WAKELOCKS
+    struct wakeup_source fp_wakelock;
+#else
+    struct wake_lock fp_wakelock;
+#endif
 #ifdef ANC_USE_IRQ
     struct work_struct work_queue;
     int irq_gpio;
@@ -121,6 +134,47 @@ struct anc_data {
 };
 
 static struct anc_data *g_anc_data;
+
+struct anc_mtk_data_t{
+    struct spi_device      *spi;
+    struct class           *class;
+    struct device          *device;
+    dev_t                  devno;
+    u8                     *huge_buffer;
+    size_t                 huge_buffer_size;
+    struct input_dev       *input_dev;
+};
+struct spi_device *g_mtk_spi_device;
+
+
+struct of_device_id anc_mtk_spi_of_match[] = {
+    { .compatible = "oplus,oplus_fp", },
+    {}
+};
+
+extern void mt_spi_enable_master_clk(struct spi_device *spidev);
+extern void mt_spi_disable_master_clk(struct spi_device *spidev);
+
+void spi_clk_enable(u8 bonoff)
+{
+    if (bonoff) {
+        if (0 == is_spi_clk_open) {
+            pr_info("[anc] enable spi clk\n");
+            mt_spi_enable_master_clk(g_mtk_spi_device);
+            is_spi_clk_open = 1;
+        } else {
+            pr_info("[anc] spi clk already enable\n");
+        }
+    } else {
+        if (1 == is_spi_clk_open) {
+            pr_info("[anc] disable spi clk\n");
+            mt_spi_disable_master_clk(g_mtk_spi_device);
+            is_spi_clk_open = 0;
+        }  else {
+            pr_info("[anc] spi clk already disable \n");
+        }
+    }
+}
 
 
 #ifndef ANC_USE_POWER_GPIO
@@ -203,7 +257,11 @@ static int anc_opticalfp_tp_handler(struct fp_underscreen_info *tp_info)
     if(tp_info->touch_state == lasttouchmode){
         return rc;
     }
-    __pm_wakeup_event(g_anc_data->fp_wakelock, msecs_to_jiffies(ANC_WAKELOCK_HOLD_TIME));
+#ifdef ANC_CONFIG_PM_WAKELOCKS
+    __pm_wakeup_event(&g_anc_data->fp_wakelock, msecs_to_jiffies(ANC_WAKELOCK_HOLD_TIME));
+#else
+    wake_lock_timeout(&g_anc_data->fp_wakelock, msecs_to_jiffies(ANC_WAKELOCK_HOLD_TIME));
+#endif
     if (1 == tp_info->touch_state) {
         netlink_msg = (char)ANC_NETLINK_EVENT_TOUCH_DOWN;
         pr_info("[anc] Netlink touch down!");
@@ -223,7 +281,7 @@ static int anc_fb_state_chg_callback(struct notifier_block *nb,
         unsigned long val, void *data)
 {
     struct anc_data *anc_data;
-    struct msm_drm_notifier *evdata = data;
+    struct fb_event *evdata = data;
     unsigned int blank;
     char netlink_msg = (char)ANC_NETLINK_EVENT_INVALID;
     int rc = 0;
@@ -232,7 +290,7 @@ static int anc_fb_state_chg_callback(struct notifier_block *nb,
 
     anc_data = container_of(nb, struct anc_data, notifier);
 
-    if (val == MSM_DRM_ONSCREENFINGERPRINT_EVENT) {
+    if (val == MTK_ONSCREENFINGERPRINT_EVENT) {
         uint8_t op_mode = 0x0;
         op_mode = *(uint8_t *)evdata->data;
         pr_info("[anc] op_mode = %d\n", op_mode);
@@ -274,16 +332,16 @@ static int anc_fb_state_chg_callback(struct notifier_block *nb,
         }
     }*/
 
-   if (evdata && evdata->data && (val == MSM_DRM_EARLY_EVENT_BLANK) && anc_data) {
+   if (evdata && evdata->data && (val == FB_EARLY_EVENT_BLANK) && anc_data) {
         blank = *(int *)(evdata->data);
         switch (blank) {
-            case MSM_DRM_BLANK_POWERDOWN:
+            case FB_BLANK_POWERDOWN:
                 anc_data->fb_black = 1;
                 netlink_msg = ANC_NETLINK_EVENT_SCR_OFF;
                 pr_info("[anc] NET SCREEN OFF!\n");
                 netlink_send_message_to_user(&netlink_msg, sizeof(netlink_msg));
                 break;
-            case MSM_DRM_BLANK_UNBLANK:
+            case FB_BLANK_UNBLANK:
                 anc_data->fb_black = 0;
                 netlink_msg = ANC_NETLINK_EVENT_SCR_ON;
                 pr_info("[anc] NET SCREEN ON!\n");
@@ -386,10 +444,10 @@ static int anc_reset(struct anc_data *data)
     int rc;
     pr_err("anc reset\n");
     mutex_lock(&data->lock);
-    rc = select_pin_ctl(data, "anc_reset_reset");
+    gpio_direction_output(g_anc_data->rst_gpio, 0);
     //T2 >= 10ms
     mdelay(10);
-    rc |= select_pin_ctl(data, "anc_reset_active");
+    gpio_direction_output(g_anc_data->rst_gpio, 1);
     mdelay(10);
     mutex_unlock(&data->lock);
 
@@ -511,6 +569,27 @@ static ssize_t sensor_id_show(struct device *dev, struct device_attribute *attr,
 static DEVICE_ATTR(sensor_id, S_IRUSR, sensor_id_show, NULL);
 #endif
 
+static ssize_t hw_spi_enable(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+{
+    ssize_t rc = count;
+    struct anc_data *data = dev_get_drvdata(dev);
+
+    mutex_lock(&data->lock);
+    if (!strncmp(buf, "enable", strlen("enable")))
+    {
+        spi_clk_enable(1);
+    } else if (!strncmp(buf, "disable", strlen("disable"))) {
+        spi_clk_enable(0);
+    } else {
+        rc = -EINVAL;
+    }
+    mutex_unlock(&data->lock);
+
+    return rc;
+}
+static DEVICE_ATTR(spi_enable, S_IWUSR, NULL, hw_spi_enable);
+
+
 #ifdef ANC_USE_IRQ
 static void anc_enable_irq(struct anc_data *data)
 {
@@ -572,6 +651,7 @@ static struct attribute *attributes[] = {
 #ifdef ANC_USE_SPI
     &dev_attr_sensor_id.attr,
 #endif
+	&dev_attr_spi_enable.attr,
     NULL
 };
 
@@ -593,7 +673,11 @@ static irqreturn_t anc_irq_handler(int irq, void *handle)
     struct anc_data *data = handle;
 
     pr_info("irq handler\n");
-    __pm_wakeup_event(g_anc_data->fp_wakelock, msecs_to_jiffies(ANC_WAKELOCK_HOLD_TIME));
+#ifdef ANC_CONFIG_PM_WAKELOCKS
+    __pm_wakeup_event(&data->fp_wakelock, msecs_to_jiffies(ANC_WAKELOCK_HOLD_TIME));
+#else
+    wake_lock_timeout(&data->fp_wakelock, msecs_to_jiffies(ANC_WAKELOCK_HOLD_TIME));
+#endif
     schedule_work(&data->work_queue);
 
     return IRQ_HANDLED;
@@ -626,19 +710,27 @@ static int anc_gpio_init(struct device *dev, struct anc_data *data)
 {
     int rc = 0;
     size_t i;
+    struct platform_device *pdev = NULL;
+    struct device_node *np = NULL;
 
-    struct device_node *np = dev->of_node;
-    if (!np) {
-        dev_err(dev, "no of node found\n");
+    if (np = of_find_compatible_node(NULL, NULL, "jiiov,fingerprint")) {
+        pdev = of_find_device_by_node(np);
+        if (pdev == NULL) {
+            dev_err(dev, "pdev not found\n");
+            rc = -EINVAL;
+            goto exit;
+        }
+    } else {
+    	dev_err(dev, "no of node found\n");
         rc = -EINVAL;
         goto exit;
     }
 
+    data->dev->of_node = pdev->dev.of_node;
     if (of_property_read_bool(dev->of_node, "anc,enable-via-gpio")) {
         dev_err(dev, "%s, Using GPIO Power \n", __func__);
         anc_gpio_pwr_flag = 1;
     }
-
 
     rc = anc_request_named_gpio(data, "anc,gpio_rst", &data->rst_gpio);
     if (rc)
@@ -687,6 +779,10 @@ static int anc_gpio_init(struct device *dev, struct anc_data *data)
         }
         dev_info(dev, "found pin control %s\n", n);
         data->pinctrl_state[i] = state;
+        rc = pinctrl_select_state(data->fingerprint_pinctrl, data->pinctrl_state[i]);
+        if (rc) {
+            dev_err(dev, "anc_gpio_init:%s\n",__func__);
+        }
     }
 
 exit:
@@ -766,6 +862,15 @@ static long anc_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
         anc_disable_irq(dev_data);
         break;
 #endif
+    case ANC_IOC_ENABLE_SPI_CLK:
+        pr_info("%s: enable spi clk\n", __func__);
+        spi_clk_enable(1);
+        break;
+    case ANC_IOC_DISABLE_SPI_CLK:
+        pr_info("%s: disable spi clk\n", __func__);
+        spi_clk_enable(0);
+        break;
+
 #ifdef ANC_USE_SPI
     case ANC_IOC_SPI_SPEED:
         anc_spi_device->max_speed_hz = arg;
@@ -922,21 +1027,6 @@ static int anc_probe(anc_device_t *pdev)
 
     dev_info(dev, "Anc Probe\n");
 
-    if ((FP_JIIOV_0302 != get_fpsensor_type()) && (FP_JIIOV_0301 != get_fpsensor_type())) {
-        pr_err("%s, found not jiiov sensor\n", __func__);
-        rc = -EPROBE_DEFER;
-        return rc;
-    }
-
-#ifdef ANC_USE_NETLINK
-		anc_netlink_init();
-    /*Register for receiving tp touch event.
-     * Must register after get_fpsensor_type filtration as only one handler can be registered.
-    */
-		opticalfp_irq_handler_register(anc_opticalfp_tp_handler);
-		pr_info("register tp event handler");
-#endif
-
     /* Allocate device data */
     dev_data = devm_kzalloc(dev, sizeof(*dev_data), GFP_KERNEL);
     if (!dev_data) {
@@ -1028,12 +1118,16 @@ static int anc_probe(anc_device_t *pdev)
     INIT_WORK(&dev_data->work_queue, anc_do_irq_work);
 #endif
 
-    g_anc_data->fp_wakelock = wakeup_source_register(NULL, "anc_fp_wakelock");
+#ifdef ANC_CONFIG_PM_WAKELOCKS
+    wakeup_source_init(&dev_data->fp_wakelock, "anc_fp_wakelock");
+#else
+    wake_lock_init(&dev_data->fp_wakelock, WAKE_LOCK_SUSPEND, "anc_fp_wakelock");
+#endif
 
 #ifdef ANC_USE_NETLINK
     /* Register fb notifier callback */
     dev_data->notifier = anc_noti_block;
-    rc = msm_drm_register_client(&dev_data->notifier);
+    rc = fb_register_client(&dev_data->notifier);
     if (rc < 0) {
         dev_err(dev, "%s: Failed to register fb notifier client\n", __func__);
         goto exit;
@@ -1083,9 +1177,13 @@ static int anc_remove(anc_device_t *pdev)
 #ifdef ANC_USE_IRQ
     cancel_work_sync(&data->work_queue);
 #endif
-    wakeup_source_unregister(g_anc_data->fp_wakelock);
+#ifdef ANC_CONFIG_PM_WAKELOCKS
+    wakeup_source_trash(&data->fp_wakelock);
+#else
+    wake_lock_destroy(&data->fp_wakelock);
+#endif
 #ifdef ANC_USE_NETLINK
-    msm_drm_unregister_client(&data->notifier);
+    fb_unregister_client(&data->notifier);
 #endif
     cdev_del(&data->cdev);
     device_destroy(data->dev_class, data->dev_num);
@@ -1113,9 +1211,54 @@ static anc_driver_t anc_driver = {
     .remove = anc_remove,
 };
 
+int anc_mtk_spi_probe(struct spi_device *spi)
+{
+    int error = 0;
+    struct anc_mtk_data_t *anc_mtk = NULL;
+    pr_info("[anc] %s enter\n", __func__);
+    anc_mtk = kzalloc(sizeof(struct anc_mtk_data_t), GFP_KERNEL);
+    if (!anc_mtk) {
+        return -ENOMEM;
+    }
+    pr_info("%s\n", __func__);
+    spi_set_drvdata(spi, anc_mtk);
+    g_mtk_spi_device = spi;
+    pr_info("[anc] %s is successful\n", __func__);
+    return error;
+}
+
+int anc_mtk_spi_remove(struct spi_device *spi)
+{
+    struct anc_mtk_data_t *anc_mtk = spi_get_drvdata(spi);
+    pr_info("[anc]%s\n", __func__);
+    kfree(anc_mtk);
+    return 0;
+}
+
+struct spi_driver spi_driver = {
+    .driver = {
+        .name = "anc_mtk",
+        .owner = THIS_MODULE,
+        .of_match_table = anc_mtk_spi_of_match,
+        .bus = &spi_bus_type,
+    },
+    .probe = anc_mtk_spi_probe,
+    .remove = anc_mtk_spi_remove
+};
+
 static int __init ancfp_init(void)
 {
     int rc;
+
+    if (FP_JIIOV_0302 != (rc = get_fpsensor_type())) {
+        pr_err("%s, found not jiiov sensor rc:%d\n", __func__,rc);
+        rc = -EINVAL;
+        return rc;
+    }
+    if (spi_register_driver(&spi_driver)) {
+        printk(KERN_ERR "register spi driver fail%s\n", __func__);
+        return -EINVAL;
+    }
 
 #ifdef ANC_USE_SPI
     rc = spi_register_driver(&anc_driver);
@@ -1127,6 +1270,16 @@ static int __init ancfp_init(void)
     } else {
         pr_err("%s %d\n", __func__, rc);
     }
+
+#ifdef ANC_USE_NETLINK
+    anc_netlink_init();
+    /*Register for receiving tp touch event.
+     * Must register after get_fpsensor_type filtration as only one handler can be registered.
+    */
+    opticalfp_irq_handler_register(anc_opticalfp_tp_handler);
+    pr_info("register tp event handler");
+#endif
+
     return rc;
 }
 
@@ -1139,14 +1292,14 @@ static void __exit ancfp_exit(void)
 #ifdef ANC_USE_SPI
     spi_unregister_driver(&anc_driver);
 #else
+    spi_unregister_driver(&spi_driver);
     platform_driver_unregister(&anc_driver);
 #endif
 }
 
-late_initcall(ancfp_init);
+module_init(ancfp_init);
 module_exit(ancfp_exit);
 
-MODULE_SOFTDEP("pre: oplus_fp_common");
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("JIIOV");
 MODULE_DESCRIPTION("JIIOV fingerprint sensor device driver");
