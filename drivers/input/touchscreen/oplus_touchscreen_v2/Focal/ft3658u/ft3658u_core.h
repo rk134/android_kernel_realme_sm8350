@@ -228,6 +228,7 @@ struct chip_data_ft3658u {
 	unsigned long intr_jiffies;
 	bool high_resolution_support;
 	bool high_resolution_support_x8;
+	bool leave_gesture_buffer;
 	bool switch_game_rate_support;
 	uint16_t game_rate;
 };
