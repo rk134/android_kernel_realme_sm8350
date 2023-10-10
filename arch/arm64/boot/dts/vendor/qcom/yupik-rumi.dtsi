@@ -149,7 +149,6 @@
 	qcom,vddp-ref-clk-supply = <&L9B>;
 	qcom,vddp-ref-clk-max-microamp = <100>;
 
-	qcom,disable-lpm;
 	rpm-level = <0>;
 	spm-level = <0>;
 
